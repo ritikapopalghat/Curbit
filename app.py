@@ -36,11 +36,9 @@ def get_dynamic_price(lat, lon, hr, q):
     return (base * multiplier) + quality_bonus
 
 def retrain_model():
-    """Retrains the model using both Accepted and Declined logs."""
     logs = list(logs_col.find())
     if len(logs) > 5:
         df = pd.DataFrame(logs)
-        # Brain learns from Successful (Accepted) transactions to predict future 'Good' prices
         success_df = df[df['outcome'] == 'Accepted']
         if len(success_df) > 2:
             X = success_df[['lat', 'lon', 'hour', 'quality']]
@@ -54,13 +52,15 @@ st.set_page_config(page_title="CURBIT. | Mobility", layout="wide")
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; background-color: #ffffff; }
     [data-testid="stSidebar"] { background-color: #000000 !important; }
     [data-testid="stSidebar"] * { color: #ffffff !important; }
     div.stButton > button { 
         background-color: #000; color: #fff; border-radius: 8px; 
-        width: 100%; border: none; padding: 12px; font-weight: bold;
+        width: 100%; border: none; padding: 14px; font-weight: bold;
+        margin-top: 15px; transition: 0.3s;
     }
+    div.stButton > button:hover { background-color: #333; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -84,7 +84,7 @@ if 'user' not in st.session_state: st.session_state.user = None
 if not st.session_state.user:
     _, col, _ = st.columns([1, 1.2, 1])
     with col:
-        st.markdown("<h1 style='text-align:center; font-size:60px;'>CURBIT.</h1>", unsafe_allow_html=True)
+        st.markdown("<h1 style='text-align:center; font-size:65px; letter-spacing:-4px;'>CURBIT.</h1>", unsafe_allow_html=True)
         t_l, t_r = st.tabs(["Login", "Register"])
         with t_l:
             u_in = st.text_input("Username")
@@ -103,7 +103,7 @@ if not st.session_state.user:
 else:
     user = st.session_state.user
     st.sidebar.markdown(f"## CURBIT.")
-    st.sidebar.write(f"User: **{user['user']}**")
+    st.sidebar.write(f"Verified: **{user['user']}**")
     
     loc = get_geolocation()
     lat, lon = (loc['coords']['latitude'], loc['coords']['longitude']) if loc and 'coords' in loc else (18.62, 73.79)
@@ -130,7 +130,7 @@ else:
                 if s['status'] == "Booked":
                     cb.warning(f"Request from: {s.get('booked_by')}")
                     b1, b2 = cb.columns(2)
-                    if b1.button("Allow Parking", key=f"h_acc_{s['_id']}"):
+                    if b1.button("Accept Rider", key=f"h_acc_{s['_id']}"):
                         spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Occupied"}})
                         st.rerun()
                     if b2.button("Deny Request", key=f"h_rej_{s['_id']}"):
@@ -142,22 +142,7 @@ else:
                 cc.write(f"₹{s['price']}/hr")
                 cc.caption(f"Status: {s['status']}")
 
-        with st.expander("➕ PUBLISH NEW SPOT"):
-            f = st.file_uploader("Upload Image", type=['jpg', 'png'])
-            if f:
-                q, hr = random.choice([0, 1]), datetime.now().hour
-                addr = get_pan_india_address(lat, lon)
-                d_price = get_dynamic_price(lat, lon, hr, q)
-                st.write(f"📍 {addr} | Suggested Price: **₹{d_price}/hr**")
-                if st.button("CONFIRM & PUBLISH"):
-                    spots_col.insert_one({
-                        "host": user['user'], "price": d_price, "lat": lat, "lon": lon,
-                        "address": addr, "status": "Available", "image_data": f.getvalue(),
-                        "hour": hr, "quality": q
-                    })
-                    st.rerun()
-
-    # --- DRIVER PORTAL (THE FEEDBACK LOOP) ---
+    # --- DRIVER PORTAL ---
     else:
         st.title("Nearby Infrastructure")
         t_find, t_mine = st.tabs(["🔍 Find Parking", "My Bookings"])
@@ -171,13 +156,10 @@ else:
                     with ca: st.image(s['image_data'], use_container_width=True)
                     with cb:
                         st.subheader(s['address'])
-                        st.write(f"### AI Rate: ₹{s['price']}/hr")
+                        st.write(f"### Rate: ₹{s['price']}/hr")
                         
-                        # DRIVER BUTTONS
                         c_acc, c_dec = st.columns(2)
-                        
-                        if c_acc.button("✅ ACCEPT PRICE", key=f"d_acc_{s['_id']}"):
-                            # Log success to AI
+                        if c_acc.button("Accept Price", key=f"d_acc_{s['_id']}"):
                             logs_col.insert_one({
                                 "lat": s['lat'], "lon": s['lon'], "hour": s['hour'], 
                                 "quality": s['quality'], "price": s['price'], "outcome": "Accepted"
@@ -187,19 +169,31 @@ else:
                             st.success("Request Sent!")
                             time.sleep(1); st.rerun()
                             
-                        if c_dec.button("❌ TOO COSTLY", key=f"d_dec_{s['_id']}"):
-                            # Log rejection to AI
+                        if c_dec.button("Too Costly", key=f"d_dec_{s['_id']}"):
                             logs_col.insert_one({
                                 "lat": s['lat'], "lon": s['lon'], "hour": s['hour'], 
                                 "quality": s['quality'], "price": s['price'], "outcome": "Declined"
                             })
-                            retrain_model() # Learns this was too expensive
-                            st.error("Reported: Price is too high.")
+                            retrain_model()
+                            st.error("Reported: Price too high.")
                             time.sleep(1); st.rerun()
 
         with t_mine:
             mine = list(spots_col.find({"booked_by": user['user']}))
+            if not mine: st.caption("No active bookings.")
             for t in mine:
                 with st.container(border=True):
-                    st.write(f"### {t['address']} - ₹{t['price']}/hr")
-                    st.write(f"Current Status: **{t['status']}**")
+                    c1, c2 = st.columns([1, 2])
+                    if "image_data" in t: c1.image(t['image_data'], use_container_width=True)
+                    
+                    with c2:
+                        st.write(f"### {t['address']}")
+                        st.write(f"Rate: ₹{t['price']}/hr")
+                        status_color = "Green" if t['status'] == "Occupied" else "Orange"
+                        st.markdown(f"Status: **:{status_color}[{t['status']}]**")
+                        
+                        if t['status'] == "Occupied":
+                            maps_url = f"https://www.google.com/maps/search/?api=1&query={t['lat']},{t['lon']}"
+                            st.link_button("Start Navigation", maps_url)
+                        else:
+                            st.info("Waiting for Host to grant entry...")
