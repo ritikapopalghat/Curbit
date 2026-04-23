@@ -1,0 +1,7 @@
+streamlit
+pymongo
+pandas
+scikit-learn
+joblib
+geopy
+streamlit-js-eval
