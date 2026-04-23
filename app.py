@@ -113,34 +113,71 @@ else:
         st.rerun()
 
     # --- HOST PORTAL ---
+    # --- HOST PORTAL ---
     if "Host" in user['role']:
         st.title("Host Dashboard")
         
+        # 1. Show Metrics First
         my_assets = list(spots_col.find({"host": user['user']}))
         rev = sum([s['price'] for s in my_assets if s['status'] == "Occupied"])
         st.metric("LIVE EARNINGS", f"₹{rev}")
         
         st.divider()
+
+        # 2. THE UPLOAD SECTION (Moved up so you can see it!)
+        with st.expander("➕ PUBLISH NEW PARKING SPOT", expanded=True):
+            f = st.file_uploader("Upload Image of Parking Space", type=['jpg', 'png'])
+            if f:
+                # Show preview immediately
+                st.image(f, width=300)
+                q, hr = random.choice([0, 1]), datetime.now().hour
+                addr = get_pan_india_address(lat, lon)
+                d_price = get_dynamic_price(lat, lon, hr, q)
+                
+                st.write(f"📍 **Detected Location:** {addr}")
+                st.write(f"### AI Suggested Price: ₹{d_price}/hr")
+                
+                if st.button("CONFIRM & PUBLISH LIVE"):
+                    spots_col.insert_one({
+                        "host": user['user'], 
+                        "price": d_price, 
+                        "lat": lat, "lon": lon,
+                        "address": addr, 
+                        "status": "Available", 
+                        "image_data": f.getvalue(),
+                        "hour": hr, 
+                        "quality": q
+                    })
+                    st.success("Spot is now Live!")
+                    time.sleep(1)
+                    st.rerun()
+
+        st.divider()
+        st.subheader("Your Active Spots")
         
-        for s in my_assets:
-            with st.container(border=True):
-                ca, cb, cc = st.columns([1, 2, 1])
-                if "image_data" in s: ca.image(s['image_data'], width=100)
-                
-                if s['status'] == "Booked":
-                    cb.warning(f"Request from: {s.get('booked_by')}")
-                    b1, b2 = cb.columns(2)
-                    if b1.button("Accept Rider", key=f"h_acc_{s['_id']}"):
-                        spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Occupied"}})
-                        st.rerun()
-                    if b2.button("Deny Request", key=f"h_rej_{s['_id']}"):
-                        spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Available", "booked_by": None}})
-                        st.rerun()
-                else:
-                    cb.write(f"**{s['address']}**")
-                
-                cc.write(f"₹{s['price']}/hr")
-                cc.caption(f"Status: {s['status']}")
+        # 3. List Existing Assets
+        if not my_assets:
+            st.info("You haven't listed any spots yet. Use the plus button above!")
+        else:
+            for s in my_assets:
+                with st.container(border=True):
+                    ca, cb, cc = st.columns([1, 2, 1])
+                    if "image_data" in s: ca.image(s['image_data'], width=100)
+                    
+                    if s['status'] == "Booked":
+                        cb.warning(f"Request from: {s.get('booked_by')}")
+                        b1, b2 = cb.columns(2)
+                        if b1.button("Allow Parking", key=f"h_acc_{s['_id']}"):
+                            spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Occupied"}})
+                            st.rerun()
+                        if b2.button("Deny Request", key=f"h_rej_{s['_id']}"):
+                            spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Available", "booked_by": None}})
+                            st.rerun()
+                    else:
+                        cb.write(f"**{s['address']}**")
+                    
+                    cc.write(f"₹{s['price']}/hr")
+                    cc.caption(f"Status: {s['status']}")
 
     # --- DRIVER PORTAL ---
     else:
