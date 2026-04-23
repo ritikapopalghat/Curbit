@@ -134,8 +134,8 @@ else:
                 addr = get_pan_india_address(lat, lon)
                 d_price = get_dynamic_price(lat, lon, hr, q)
                 
-                st.write(f"📍 **Detected Location:** {addr}")
-                st.write(f"### AI Suggested Price: ₹{d_price}/hr")
+                st.write(f"📍Location: {addr}")
+                st.write(f"###  Price: ₹{d_price}/hr")
                 
                 if st.button("CONFIRM & PUBLISH LIVE"):
                     spots_col.insert_one({
