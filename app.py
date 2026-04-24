@@ -9,6 +9,7 @@ import random
 import time
 from streamlit_js_eval import get_geolocation
 from geopy.geocoders import Nominatim
+
 # --- DATABASE CONFIGURATION ---
 client = pymongo.MongoClient("mongodb+srv://admin:1234@cluster0.vbcsfq7.mongodb.net/?appName=Cluster0")
 db = client["GlobalCurb"]
@@ -23,7 +24,9 @@ def get_dynamic_price(lat, lon, hr, q):
     if os.path.exists(MODEL_PATH):
         try:
             model = joblib.load(MODEL_PATH)
-            pred = model.predict([[lat, lon, hr, q]])[0]
+            # Ensure input is a DataFrame with feature names for scikit-learn consistency
+            features = pd.DataFrame([[lat, lon, hr, q]], columns=['lat', 'lon', 'hour', 'quality'])
+            pred = model.predict(features)[0]
             return round(max(30.0, min(pred, 250.0)), 2)
         except:
             pass 
@@ -32,14 +35,15 @@ def get_dynamic_price(lat, lon, hr, q):
     is_peak = (8 <= hr <= 11) or (17 <= hr <= 21)
     multiplier = 1.3 if is_peak else 1.0
     quality_bonus = 20.0 if q == 1 else 0.0
-    return (base * multiplier) + quality_bonus
+    return float((base * multiplier) + quality_bonus)
 
 def retrain_model():
     logs = list(logs_col.find())
     if len(logs) > 5:
         df = pd.DataFrame(logs)
         success_df = df[df['outcome'] == 'Accepted']
-        if len(success_df) > 2:
+        # Analysis Improvement: Check if we have enough variance to train
+        if len(success_df) >= 3:
             X = success_df[['lat', 'lon', 'hour', 'quality']]
             y = success_df['price']
             model = RandomForestRegressor(n_estimators=100, random_state=42)
@@ -112,29 +116,23 @@ else:
         st.rerun()
 
     # --- HOST PORTAL ---
-    # --- HOST PORTAL ---
     if "Host" in user['role']:
         st.title("Host Dashboard")
-        
-        # 1. Show Metrics First
         my_assets = list(spots_col.find({"host": user['user']}))
         rev = sum([s['price'] for s in my_assets if s['status'] == "Occupied"])
         st.metric("LIVE EARNINGS", f"₹{rev}")
         
         st.divider()
-
-        # 2. THE UPLOAD SECTION (Moved up so you can see it!)
         with st.expander("➕ PUBLISH NEW PARKING SPOT", expanded=True):
             f = st.file_uploader("Upload Image of Parking Space", type=['jpg', 'png'])
             if f:
-                # Show preview immediately
                 st.image(f, width=300)
                 q, hr = random.choice([0, 1]), datetime.now().hour
                 addr = get_pan_india_address(lat, lon)
                 d_price = get_dynamic_price(lat, lon, hr, q)
                 
                 st.write(f"📍Location: {addr}")
-                st.write(f"###  Price: ₹{d_price}/hr")
+                st.write(f"### Price: ₹{d_price}/hr")
                 
                 if st.button("CONFIRM & PUBLISH LIVE"):
                     spots_col.insert_one({
@@ -148,35 +146,29 @@ else:
                         "quality": q
                     })
                     st.success("Spot is now Live!")
-                    time.sleep(1)
-                    st.rerun()
+                    time.sleep(1); st.rerun()
 
         st.divider()
         st.subheader("Your Active Spots")
-        
-        # 3. List Existing Assets
-        if not my_assets:
-            st.info("You haven't listed any spots yet. Use the plus button above!")
-        else:
-            for s in my_assets:
-                with st.container(border=True):
-                    ca, cb, cc = st.columns([1, 2, 1])
-                    if "image_data" in s: ca.image(s['image_data'], width=100)
-                    
-                    if s['status'] == "Booked":
-                        cb.warning(f"Request from: {s.get('booked_by')}")
-                        b1, b2 = cb.columns(2)
-                        if b1.button("Allow Parking", key=f"h_acc_{s['_id']}"):
-                            spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Occupied"}})
-                            st.rerun()
-                        if b2.button("Deny Request", key=f"h_rej_{s['_id']}"):
-                            spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Available", "booked_by": None}})
-                            st.rerun()
-                    else:
-                        cb.write(f"**{s['address']}**")
-                    
-                    cc.write(f"₹{s['price']}/hr")
-                    cc.caption(f"Status: {s['status']}")
+        for s in my_assets:
+            with st.container(border=True):
+                ca, cb, cc = st.columns([1, 2, 1])
+                if "image_data" in s: ca.image(s['image_data'], width=100)
+                
+                if s['status'] == "Booked":
+                    cb.warning(f"Request from: {s.get('booked_by')}")
+                    b1, b2 = cb.columns(2)
+                    if b1.button("Allow Parking", key=f"h_acc_{s['_id']}"):
+                        spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Occupied"}})
+                        st.rerun()
+                    if b2.button("Deny Request", key=f"h_rej_{s['_id']}"):
+                        spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Available", "booked_by": None}})
+                        st.rerun()
+                else:
+                    cb.write(f"**{s['address']}**")
+                
+                cc.write(f"₹{s['price']}/hr")
+                cc.caption(f"Status: {s['status']}")
 
     # --- DRIVER PORTAL ---
     else:
@@ -198,7 +190,8 @@ else:
                         if c_acc.button("Accept Price", key=f"d_acc_{s['_id']}"):
                             logs_col.insert_one({
                                 "lat": s['lat'], "lon": s['lon'], "hour": s['hour'], 
-                                "quality": s['quality'], "price": s['price'], "outcome": "Accepted"
+                                "quality": s['quality'], "price": s['price'], "outcome": "Accepted",
+                                "timestamp": datetime.now()
                             })
                             spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Booked", "booked_by": user['user']}})
                             retrain_model()
@@ -208,7 +201,8 @@ else:
                         if c_dec.button("Too Costly", key=f"d_dec_{s['_id']}"):
                             logs_col.insert_one({
                                 "lat": s['lat'], "lon": s['lon'], "hour": s['hour'], 
-                                "quality": s['quality'], "price": s['price'], "outcome": "Declined"
+                                "quality": s['quality'], "price": s['price'], "outcome": "Declined",
+                                "timestamp": datetime.now()
                             })
                             retrain_model()
                             st.error("Reported: Price too high.")
@@ -216,20 +210,12 @@ else:
 
         with t_mine:
             mine = list(spots_col.find({"booked_by": user['user']}))
-            if not mine: st.caption("No active bookings.")
             for t in mine:
                 with st.container(border=True):
                     c1, c2 = st.columns([1, 2])
                     if "image_data" in t: c1.image(t['image_data'], use_container_width=True)
-                    
                     with c2:
                         st.write(f"### {t['address']}")
                         st.write(f"Rate: ₹{t['price']}/hr")
                         status_color = "Green" if t['status'] == "Occupied" else "Orange"
                         st.markdown(f"Status: **:{status_color}[{t['status']}]**")
-                        
-                        if t['status'] == "Occupied":
-                            maps_url = f"https://www.google.com/maps/search/?api=1&query={t['lat']},{t['lon']}"
-                            st.link_button("Start Navigation", maps_url)
-                        else:
-                            st.info("Waiting for Host to grant entry...")
