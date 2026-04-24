@@ -9,43 +9,6 @@ import random
 import time
 from streamlit_js_eval import get_geolocation
 from geopy.geocoders import Nominatim
-# --- THE AI TRAINING ENGINE ---
-def train_smart_model():
-    try:
-        # 1. Load the Historical CSV (The Big Data Baseline)
-        df_hist = pd.read_csv("historical_parking_data.csv")
-        
-        # 2. Fetch Live Feedback from MongoDB
-        # We only train on 'Accepted' outcomes to learn successful pricing
-        live_logs = list(logs_col.find({"outcome": "Accepted"}))
-        
-        if live_logs:
-            df_live = pd.DataFrame(live_logs)
-            # Standardize columns to match CSV format: lat, lon, hour, quality, accepted_price
-            df_live = df_live[['lat', 'lon', 'hour', 'quality', 'price']]
-            df_live.columns = ['lat', 'lon', 'hour', 'quality', 'accepted_price']
-            
-            # Combine CSV and Live Data
-            df_total = pd.concat([df_hist, df_live], ignore_index=True)
-        else:
-            df_total = df_hist
-
-        # 3. Define Features and Target
-        X = df_total[['lat', 'lon', 'hour', 'quality']]
-        y = df_total['accepted_price']
-        
-        # 4. Train the Random Forest Regressor
-        model = RandomForestRegressor(n_estimators=100, random_state=42)
-        model.fit(X, y)
-        
-        # 5. Save the trained 'Brain' to a file
-        joblib.dump(model, 'adaptive_brain.pkl')
-        return model
-        
-    except Exception as e:
-        print(f"Training failed: {e}")
-        return None
-    
 # --- DATABASE CONFIGURATION ---
 client = pymongo.MongoClient("mongodb+srv://admin:1234@cluster0.vbcsfq7.mongodb.net/?appName=Cluster0")
 db = client["GlobalCurb"]
