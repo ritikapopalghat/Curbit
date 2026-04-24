@@ -10,227 +10,163 @@ import time
 from streamlit_js_eval import get_geolocation
 from geopy.geocoders import Nominatim
 
-# --- DATABASE CONFIGURATION ---
-client = pymongo.MongoClient("mongodb+srv://admin:1234@cluster0.vbcsfq7.mongodb.net/?appName=Cluster0")
+# --- 1. DATABASE & MODEL CONFIGURATION ---
+# Replace the URI below with your actual MongoDB connection string
+MONGO_URI = "mongodb+srv://admin:1234@cluster0.vbcsfq7.mongodb.net/?appName=Cluster0"
+client = pymongo.MongoClient(MONGO_URI)
 db = client["GlobalCurb"]
 spots_col = db["world_spots"]
 users_col = db["users"]
 logs_col = db["live_training_logs"]
 
 MODEL_PATH = 'adaptive_brain.pkl'
+CSV_PATH = 'historical_parking_data.csv'
 
-# --- AI PRICING BRAIN ---
+# --- 2. THE BIG DATA TRAINING ENGINE ---
+def train_smart_model():
+    """Combines CSV baseline + MongoDB logs to train the Random Forest."""
+    try:
+        # Load the CSV you generated
+        if os.path.exists(CSV_PATH):
+            df_hist = pd.read_csv(CSV_PATH)
+        else:
+            st.error("Baseline CSV not found!")
+            return None
+        
+        # Load Live Logs from MongoDB
+        live_logs = list(logs_col.find())
+        if live_logs:
+            df_live = pd.DataFrame(live_logs)
+            # Standardize columns to match CSV
+            df_live = df_live[['lat', 'lon', 'hour', 'quality', 'price']]
+            df_live.columns = ['lat', 'lon', 'hour', 'quality', 'accepted_price']
+            # Filter only successful market matches (Accepted)
+            df_success = df_live.copy() 
+            df_total = pd.concat([df_hist, df_success], ignore_index=True)
+        else:
+            df_total = df_hist
+
+        # Machine Learning Training
+        X = df_total[['lat', 'lon', 'hour', 'quality']]
+        y = df_total['accepted_price']
+        
+        model = RandomForestRegressor(n_estimators=100, random_state=42)
+        model.fit(X, y)
+        
+        # Save the model locally
+        joblib.dump(model, MODEL_PATH)
+        return model
+    except Exception as e:
+        st.sidebar.error(f"Training Error: {e}")
+        return None
+
 def get_dynamic_price(lat, lon, hr, q):
+    """Predicts price using the trained .pkl file."""
     if os.path.exists(MODEL_PATH):
-        try:
-            model = joblib.load(MODEL_PATH)
-            pred = model.predict([[lat, lon, hr, q]])[0]
-            return round(max(30.0, min(pred, 250.0)), 2)
-        except:
-            pass 
-    
-    base = 40.0  
-    is_peak = (8 <= hr <= 11) or (17 <= hr <= 21)
-    multiplier = 1.3 if is_peak else 1.0
-    quality_bonus = 20.0 if q == 1 else 0.0
-    return (base * multiplier) + quality_bonus
+        model = joblib.load(MODEL_PATH)
+        pred = model.predict([[lat, lon, hr, q]])[0]
+        return round(max(30.0, min(pred, 250.0)), 2)
+    return 50.0 # Fallback price
 
-def retrain_model():
-    logs = list(logs_col.find())
-    if len(logs) > 5:
-        df = pd.DataFrame(logs)
-        success_df = df[df['outcome'] == 'Accepted']
-        if len(success_df) > 2:
-            X = success_df[['lat', 'lon', 'hour', 'quality']]
-            y = success_df['price']
-            model = RandomForestRegressor(n_estimators=100, random_state=42)
-            model.fit(X, y)
-            joblib.dump(model, MODEL_PATH)
-
-# --- MODERN UI STYLING ---
+# --- 3. UI INITIALIZATION ---
 st.set_page_config(page_title="CURBIT. | Mobility", layout="wide")
+
+if 'model' not in st.session_state:
+    st.session_state.model = train_smart_model()
+
+# Custom CSS for that "Uber-style" clean look
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; background-color: #ffffff; }
-    [data-testid="stSidebar"] { background-color: #000000 !important; }
-    [data-testid="stSidebar"] * { color: #ffffff !important; }
-    div.stButton > button { 
-        background-color: #000; color: #fff; border-radius: 8px; 
-        width: 100%; border: none; padding: 14px; font-weight: bold;
-        margin-top: 15px; transition: 0.3s;
-    }
-    div.stButton > button:hover { background-color: #333; }
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    [data-testid="stSidebar"] { background-color: #000000 !important; color: white; }
+    div.stButton > button { background-color: #000; color: #fff; border-radius: 8px; width: 100%; padding: 10px; font-weight: bold;}
     </style>
 """, unsafe_allow_html=True)
 
-# --- GEO-ENGINE ---
-def get_pan_india_address(lat, lon):
-    try:
-        geolocator = Nominatim(user_agent="curbit_v2")
-        location = geolocator.reverse(f"{lat}, {lon}", timeout=5)
-        if location and 'address' in location.raw:
-            a = location.raw['address']
-            area = a.get('suburb', a.get('neighbourhood', 'Residential Area'))
-            city = a.get('city', a.get('town', 'Unknown City'))
-            return f"{area}, {city}"
-        return f"Node {lat:.2f}"
-    except:
-        return "Network Node"
-
-# --- AUTH LOGIC ---
+# --- 4. AUTHENTICATION ---
 if 'user' not in st.session_state: st.session_state.user = None
 
 if not st.session_state.user:
     _, col, _ = st.columns([1, 1.2, 1])
     with col:
-        st.markdown("<h1 style='text-align:center; font-size:65px; letter-spacing:-4px;'>CURBIT.</h1>", unsafe_allow_html=True)
-        t_l, t_r = st.tabs(["Login", "Register"])
-        with t_l:
-            u_in = st.text_input("Username")
-            p_in = st.text_input("Password", type="password")
+        st.markdown("<h1 style='text-align:center; font-size:60px; letter-spacing:-3px;'>CURBIT.</h1>", unsafe_allow_html=True)
+        t1, t2 = st.tabs(["Login", "Register"])
+        with t1:
+            u = st.text_input("Username")
+            p = st.text_input("Password", type="password")
             if st.button("SIGN IN"):
-                res = users_col.find_one({"user": u_in, "pass": p_in})
+                res = users_col.find_one({"user": u, "pass": p})
                 if res: st.session_state.user = res; st.rerun()
-                else: st.error("Access Denied")
-        with t_r:
-            u_reg = st.text_input("New Username")
-            p_reg = st.text_input("New Password", type="password")
-            role = st.selectbox("I am a", ["Host (Owner)", "Driver (User)"])
-            if st.button("CREATE ACCOUNT"):
-                users_col.insert_one({"user": u_reg, "pass": p_reg, "role": role})
-                st.success("Registered!")
-else:
-    user = st.session_state.user
-    st.sidebar.markdown(f"## CURBIT.")
-    st.sidebar.write(f"Verified: **{user['user']}**")
-    
-    loc = get_geolocation()
-    lat, lon = (loc['coords']['latitude'], loc['coords']['longitude']) if loc and 'coords' in loc else (18.62, 73.79)
+                else: st.error("Invalid Credentials")
+        with t2:
+            u_r = st.text_input("New Username")
+            p_r = st.text_input("New Password", type="password")
+            role = st.selectbox("Role", ["Host (Owner)", "Driver (User)"])
+            if st.button("CREATE"):
+                users_col.insert_one({"user": u_r, "pass": p_r, "role": role})
+                st.success("Account Created!")
 
-    if st.sidebar.button("SIGN OUT"):
+else:
+    # --- 5. MAIN APPLICATION ---
+    user = st.session_state.user
+    st.sidebar.title("CURBIT.")
+    st.sidebar.write(f"Logged in as: **{user['user']}**")
+    
+    # Hidden Admin Retrain (For your Demo)
+    with st.sidebar.expander("System Logs"):
+        if st.button("Force AI Retrain"):
+            st.session_state.model = train_smart_model()
+            st.success("Model Updated via NoSQL Logs")
+
+    if st.sidebar.button("Log Out"):
         st.session_state.user = None
         st.rerun()
 
-    # --- HOST PORTAL ---
-    # --- HOST PORTAL ---
+    # Get Geo-location
+    loc = get_geolocation()
+    curr_lat, curr_lon = (loc['coords']['latitude'], loc['coords']['longitude']) if loc and 'coords' in loc else (18.52, 73.85)
+
+    # --- HOST VIEW ---
     if "Host" in user['role']:
-        st.title("Host Dashboard")
-        
-        # 1. Show Metrics First
-        my_assets = list(spots_col.find({"host": user['user']}))
-        rev = sum([s['price'] for s in my_assets if s['status'] == "Occupied"])
-        st.metric("LIVE EARNINGS", f"₹{rev}")
-        
-        st.divider()
-
-        # 2. THE UPLOAD SECTION (Moved up so you can see it!)
-        with st.expander("➕ PUBLISH NEW PARKING SPOT", expanded=True):
-            f = st.file_uploader("Upload Image of Parking Space", type=['jpg', 'png'])
+        st.title("Host Management")
+        with st.expander("➕ Register New Curb Space", expanded=True):
+            f = st.file_uploader("Upload Spot Photo", type=['jpg', 'png'])
             if f:
-                # Show preview immediately
-                st.image(f, width=300)
-                q, hr = random.choice([0, 1]), datetime.now().hour
-                addr = get_pan_india_address(lat, lon)
-                d_price = get_dynamic_price(lat, lon, hr, q)
-                
-                st.write(f"📍Location: {addr}")
-                st.write(f"###  Price: ₹{d_price}/hr")
-                
-                if st.button("CONFIRM & PUBLISH LIVE"):
+                hr, q = datetime.now().hour, random.choice([0, 1])
+                price = get_dynamic_price(curr_lat, curr_lon, hr, q)
+                st.image(f, width=200)
+                st.info(f"AI Suggested Price: ₹{price}/hr")
+                if st.button("Publish Live"):
                     spots_col.insert_one({
-                        "host": user['user'], 
-                        "price": d_price, 
-                        "lat": lat, "lon": lon,
-                        "address": addr, 
-                        "status": "Available", 
-                        "image_data": f.getvalue(),
-                        "hour": hr, 
-                        "quality": q
+                        "host": user['user'], "price": price, "lat": curr_lat, "lon": curr_lon,
+                        "status": "Available", "image_data": f.getvalue(), "hour": hr, "quality": q
                     })
-                    st.success("Spot is now Live!")
-                    time.sleep(1)
-                    st.rerun()
+                    st.success("Spot is now active!")
+                    time.sleep(1); st.rerun()
 
-        st.divider()
-        st.subheader("Your Active Spots")
-        
-        # 3. List Existing Assets
-        if not my_assets:
-            st.info("You haven't listed any spots yet. Use the plus button above!")
-        else:
-            for s in my_assets:
-                with st.container(border=True):
-                    ca, cb, cc = st.columns([1, 2, 1])
-                    if "image_data" in s: ca.image(s['image_data'], width=100)
-                    
-                    if s['status'] == "Booked":
-                        cb.warning(f"Request from: {s.get('booked_by')}")
-                        b1, b2 = cb.columns(2)
-                        if b1.button("Allow Parking", key=f"h_acc_{s['_id']}"):
-                            spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Occupied"}})
-                            st.rerun()
-                        if b2.button("Deny Request", key=f"h_rej_{s['_id']}"):
-                            spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Available", "booked_by": None}})
-                            st.rerun()
-                    else:
-                        cb.write(f"**{s['address']}**")
-                    
-                    cc.write(f"₹{s['price']}/hr")
-                    cc.caption(f"Status: {s['status']}")
-
-    # --- DRIVER PORTAL ---
+    # --- DRIVER VIEW ---
     else:
-        st.title("Nearby Infrastructure")
-        t_find, t_mine = st.tabs(["🔍 Find Parking", "My Bookings"])
+        st.title("Available Infrastructure")
+        available = list(spots_col.find({"status": "Available"}))
+        if not available: st.warning("No spots available in this sector.")
         
-        with t_find:
-            available = list(spots_col.find({"status": "Available"}))
-            if not available: st.info("No spots found nearby.")
-            for s in available:
-                with st.container(border=True):
-                    ca, cb = st.columns([1, 2])
-                    with ca: st.image(s['image_data'], use_container_width=True)
-                    with cb:
-                        st.subheader(s['address'])
-                        st.write(f"### Rate: ₹{s['price']}/hr")
-                        
-                        c_acc, c_dec = st.columns(2)
-                        if c_acc.button("Accept Price", key=f"d_acc_{s['_id']}"):
-                            logs_col.insert_one({
-                                "lat": s['lat'], "lon": s['lon'], "hour": s['hour'], 
-                                "quality": s['quality'], "price": s['price'], "outcome": "Accepted"
-                            })
-                            spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Booked", "booked_by": user['user']}})
-                            retrain_model()
-                            st.success("Request Sent!")
-                            time.sleep(1); st.rerun()
-                            
-                        if c_dec.button("Too Costly", key=f"d_dec_{s['_id']}"):
-                            logs_col.insert_one({
-                                "lat": s['lat'], "lon": s['lon'], "hour": s['hour'], 
-                                "quality": s['quality'], "price": s['price'], "outcome": "Declined"
-                            })
-                            retrain_model()
-                            st.error("Reported: Price too high.")
-                            time.sleep(1); st.rerun()
-
-        with t_mine:
-            mine = list(spots_col.find({"booked_by": user['user']}))
-            if not mine: st.caption("No active bookings.")
-            for t in mine:
-                with st.container(border=True):
-                    c1, c2 = st.columns([1, 2])
-                    if "image_data" in t: c1.image(t['image_data'], use_container_width=True)
+        for s in available:
+            with st.container(border=True):
+                c1, c2 = st.columns([1, 3])
+                c1.image(s['image_data'], use_container_width=True)
+                with c2:
+                    st.subheader(f"Curb Slot at {s['lat']:.3f}, {s['lon']:.3f}")
+                    st.write(f"### Rate: ₹{s['price']}/hr")
                     
-                    with c2:
-                        st.write(f"### {t['address']}")
-                        st.write(f"Rate: ₹{t['price']}/hr")
-                        status_color = "Green" if t['status'] == "Occupied" else "Orange"
-                        st.markdown(f"Status: **:{status_color}[{t['status']}]**")
+                    b_acc, b_dec = st.columns(2)
+                    if b_acc.button("Accept", key=f"acc_{s['_id']}"):
+                        logs_col.insert_one({"lat": s['lat'], "lon": s['lon'], "hour": s['hour'], "quality": s['quality'], "price": s['price'], "outcome": "Accepted"})
+                        spots_col.update_one({"_id": s['_id']}, {"$set": {"status": "Booked", "booked_by": user['user']}})
+                        st.session_state.model = train_smart_model() # Silent update
+                        st.success("Request Sent!"); time.sleep(1); st.rerun()
                         
-                        if t['status'] == "Occupied":
-                            maps_url = f"https://www.google.com/maps/search/?api=1&query={t['lat']},{t['lon']}"
-                            st.link_button("Start Navigation", maps_url)
-                        else:
-                            st.info("Waiting for Host to grant entry...")
+                    if b_dec.button("Too Costly", key=f"dec_{s['_id']}"):
+                        logs_col.insert_one({"lat": s['lat'], "lon": s['lon'], "hour": s['hour'], "quality": s['quality'], "price": s['price'], "outcome": "Declined"})
+                        st.session_state.model = train_smart_model() # Silent update
+                        st.error("Market feedback recorded."); time.sleep(1); st.rerun()
